@@ -1,0 +1,115 @@
+--
+-- Построение спреда по нескольким инструментам:
+-- spread := k * price(security) - k1 * price(tag1)
+-- Можно добавлять дополнительные инструменты, модифицируя код индикатора.
+--
+
+Settings = {
+    Name = "SpreadIndicator",
+    k = 1, -- коэффициент, с которым учитывается цена основного инструмента
+    tag1 = "EURRUBF", -- метка графика, откуда берётся цена дополнительного инструмента 1
+    k1 = 1000, -- коэффициент, с которым учитывается цена дополнительного инструмента 1
+    line = { { Name = "Spread", Color = RGB(0, 0, 255), Type = TYPE_LINE, Width = 1, } }
+}
+
+function Init()
+    return 1
+end
+
+local function getTimeCode(dt)
+    return (dt.year * 10000 + dt.month * 100 + dt.day) * 1000000 + (dt.hour * 10000 + dt.min * 100 + dt.sec)
+end
+
+--- Найти свечу, относящуюся к заданному времени или предшествующую ему, если для заданного времени нет свечи.
+-- @param tag строковый идентификатор графика или индикатора
+-- @param timeCode метка времени в формате yyyymmddhhmmss
+-- @return искомая свеча или nil, если свеча не найдена.
+local function getCandleByTimeCode(tag, timeCode)
+    local numCandles = getNumCandles(tag)
+    if numCandles < 2 then
+        return nil
+    end
+    local lastCandle, n, _ = getCandlesByIndex(tag, 0, numCandles - 1, 1)
+    if n ~= 1 then
+        return nil
+    end
+    lastCandle = lastCandle[0]
+    if getTimeCode(lastCandle.datetime) <= timeCode then
+        return lastCandle
+    end
+    local b = numCandles - 1
+    local a = b - 1
+    local candle
+    while true do
+        local firstCandle, n, _ = getCandlesByIndex(tag, 0, a, 1)
+        if n ~= 1 then
+            return nil
+        end
+        firstCandle = firstCandle[0]
+        local firstTimeCode = getTimeCode(firstCandle.datetime)
+        if firstTimeCode == timeCode then
+            return firstCandle
+        elseif firstTimeCode < timeCode then
+            candle = firstCandle
+            break
+        elseif a == 0 then
+            return nil
+        else
+            a = math.max(0, 2 * a - b)
+        end
+    end
+    while true do
+        local c = math.floor((a + b) / 2)
+        if c == a then
+            return candle
+        else
+            local middleCandle, n, _ = getCandlesByIndex(tag, 0, c, 1)
+            if n ~= 1 then
+                return nil
+            end
+            middleCandle = middleCandle[0]
+            local middleTimeCode = getTimeCode(middleCandle.datetime)
+            if middleTimeCode == timeCode then
+                return middleCandle
+            elseif middleTimeCode < timeCode then
+                a, candle = c, middleCandle
+            else
+                b = c
+            end
+        end
+    end
+end
+
+--- Вычислить спред.
+-- @param index номер свечи на графике
+-- @return значение спреда или nil, если оно неопределено
+local function getSpread(index)
+    local timeCode = getTimeCode(T(index))
+    local securityPrice = C(index)
+    if securityPrice == nil then
+        return nil
+    end
+    -- Получение свечей дополнительных инструментов
+    local candle1 = getCandleByTimeCode(Settings.tag1, timeCode)
+    if candle1 == nil then
+        return nil
+    end
+    -- Получение цен дополнительных инструментов
+    local price1 = candle1.close
+    if price1 == nil then
+        return nil
+    end
+    -- Вычисление спреда
+    local spread = Settings.k * securityPrice - Settings.k1 * price1           
+    return spread
+end
+
+function OnCalculate(index)
+    if index > 1 then
+        local spread = getSpread(index - 1)
+        if spread then
+            SetValue(index - 1, 0, spread)
+        end
+    end
+    return getSpread(index)
+end
